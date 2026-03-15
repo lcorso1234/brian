@@ -1,43 +1,194 @@
 "use client";
 
+import { type FormEvent, useState } from "react";
+
+type Contact = {
+  firstName: string;
+  lastName: string;
+  company: string;
+  phone: string;
+  email: string;
+  websites: string[];
+};
+
+const DEFAULT_CONTACT: Contact = {
+  firstName: "Brian",
+  lastName: "Bartosz",
+  company: "Best-Tronics Mfg., Inc.",
+  phone: "708-802-9677",
+  email: "brian@best-tronics.com",
+  websites: ["https://www.best-tronics.com", "https://www.btpa.com"],
+};
+
+function escapeVCardValue(value: string) {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/,/g, "\\,")
+    .replace(/;/g, "\\;");
+}
+
+function normalizeSmsNumber(value: string) {
+  return value.trim().replace(/(?!^\+)[^\d]/g, "");
+}
+
+function prettyWebsite(value: string) {
+  return value.replace(/^https?:\/\//, "");
+}
+
+function parseContactFromLocation() {
+  if (typeof window === "undefined") {
+    return DEFAULT_CONTACT;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const websites = params.get("websites");
+
+  return {
+    firstName: params.get("first") || DEFAULT_CONTACT.firstName,
+    lastName: params.get("last") || DEFAULT_CONTACT.lastName,
+    company: params.get("company") || DEFAULT_CONTACT.company,
+    phone: params.get("phone") || DEFAULT_CONTACT.phone,
+    email: params.get("email") || DEFAULT_CONTACT.email,
+    websites: websites
+      ? websites
+          .split(",")
+          .map((site) => site.trim())
+          .filter(Boolean)
+      : DEFAULT_CONTACT.websites,
+  };
+}
+
+function buildVCard(contact: Contact) {
+  const lines = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    "PRODID:-//Best-Tronics//Contact Share//EN",
+    `N:${escapeVCardValue(contact.lastName)};${escapeVCardValue(contact.firstName)};;;`,
+    `FN:${escapeVCardValue(`${contact.firstName} ${contact.lastName}`.trim())}`,
+    `ORG:${escapeVCardValue(contact.company)}`,
+    `TEL;TYPE=CELL,VOICE:${escapeVCardValue(contact.phone)}`,
+    `EMAIL;TYPE=INTERNET,WORK:${escapeVCardValue(contact.email)}`,
+    ...contact.websites.map(
+      (site) => `URL;TYPE=WORK:${escapeVCardValue(site)}`,
+    ),
+    `REV:${new Date().toISOString()}`,
+    "END:VCARD",
+  ];
+
+  // CRLF line endings improve import reliability in iOS Contacts and Samsung Messages previews.
+  return `${lines.join("\r\n")}\r\n`;
+}
+
+function downloadContact(contact: Contact) {
+  const blob = new Blob([buildVCard(contact)], {
+    type: "text/vcard;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const fileName = `${contact.firstName}_${contact.lastName}_${contact.company}`
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/_+/g, "_");
+
+  link.href = url;
+  link.download = `${fileName}.vcf`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function buildShareUrl(contact: Contact) {
+  const url = new URL(window.location.origin);
+
+  url.searchParams.set("first", contact.firstName);
+  url.searchParams.set("last", contact.lastName);
+  url.searchParams.set("company", contact.company);
+  url.searchParams.set("phone", contact.phone);
+  url.searchParams.set("email", contact.email);
+  url.searchParams.set("websites", contact.websites.join(","));
+
+  return url.toString();
+}
+
+function isAppleMobileDevice() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const userAgent = navigator.userAgent || "";
+  const isIOS = /iPhone|iPad|iPod/i.test(userAgent);
+  const isTouchMac =
+    /Macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1;
+
+  return isIOS || isTouchMac;
+}
+
+function isMobileDevice() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function buildSmsHref(recipientPhone: string, body: string) {
+  const number = normalizeSmsNumber(recipientPhone);
+  const separator = isAppleMobileDevice() ? "&" : "?";
+
+  return `sms:${number}${separator}body=${encodeURIComponent(body)}`;
+}
+
 export default function Home() {
-  const websites = ["www.best-tronics.com", "www.btpa.com"];
+  const [contact, setContact] = useState<Contact>(parseContactFromLocation);
+  const [showSharePrompt, setShowSharePrompt] = useState(false);
+  const [recipientPhone, setRecipientPhone] = useState("");
+  const [sharePhone, setSharePhone] = useState(contact.phone);
+  const [shareEmail, setShareEmail] = useState(contact.email);
+  const [statusMessage, setStatusMessage] = useState("");
 
   const contactDetails = [
-    { label: "First Name", value: "Brian" },
-    { label: "Last Name", value: "Bartosz" },
-    { label: "Company Name", value: "Best-Tronics Mfg., Inc." },
-    { label: "Phone Number", value: "708-802-9677" },
+    { label: "First Name", value: contact.firstName },
+    { label: "Last Name", value: contact.lastName },
+    { label: "Company Name", value: contact.company },
+    { label: "Phone Number", value: contact.phone },
     {
       label: "Website(s)",
-      value: websites,
+      value: contact.websites,
     },
-    { label: "Email", value: "brian@best-tronics.com" },
+    { label: "Email", value: contact.email },
   ];
 
   const handleSaveContact = () => {
-    const vCardContent = [
-      "BEGIN:VCARD",
-      "VERSION:3.0",
-      "N:Bartosz;Brian;;;",
-      "FN:Brian Bartosz",
-      "ORG:Best-Tronics Mfg., Inc.",
-      "EMAIL;TYPE=PREF,WORK:brian@best-tronics.com",
-      ...websites.map((site) => `URL:${site}`),
-      "END:VCARD",
+    downloadContact(contact);
+    setStatusMessage("Contact download started.");
+
+    if (isMobileDevice()) {
+      setShowSharePrompt(true);
+    }
+  };
+
+  const handleShareByText = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const nextContact = {
+      ...contact,
+      phone: sharePhone.trim(),
+      email: shareEmail.trim(),
+    };
+    const shareUrl = buildShareUrl(nextContact);
+    const fullName = `${nextContact.firstName} ${nextContact.lastName}`.trim();
+    const messageBody = [
+      `Save ${fullName} from ${nextContact.company}:`,
+      shareUrl,
+      "",
+      `Phone: ${nextContact.phone}`,
+      `Email: ${nextContact.email}`,
     ].join("\n");
 
-    const blob = new Blob([vCardContent], {
-      type: "text/vcard;charset=utf-8",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "Brian_Bartosz_Best-Tronics.vcf";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    setContact(nextContact);
+    setStatusMessage("Opening your SMS app with the contact link prefilled.");
+    window.location.href = buildSmsHref(recipientPhone, messageBody);
   };
 
   return (
@@ -71,6 +222,10 @@ export default function Home() {
                   Professional Audio Cables
                 </span>
               </h1>
+              <p className="text-sm leading-6 text-white/70">
+                Save the contact first, then optionally send a text with a
+                contact link the recipient can open and import.
+              </p>
             </header>
 
             <section className="space-y-3">
@@ -89,7 +244,7 @@ export default function Home() {
                       <div className="space-y-1">
                         {value.map((item) => (
                           <p key={item} className="text-sm text-white">
-                            {item}
+                            {prettyWebsite(item)}
                           </p>
                         ))}
                       </div>
@@ -106,7 +261,7 @@ export default function Home() {
                 type="button"
                 onClick={handleSaveContact}
                 className="save-contact-button group flex w-full items-center justify-between gap-4 rounded-3xl border-2 border-[var(--accent)] bg-[var(--accent)]/90 px-6 py-4 text-left text-base font-semibold text-black shadow-[0_20px_45px_rgba(57,255,20,0.55)] transition hover:-translate-y-0.5 hover:bg-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--accent)]"
-                aria-label="Download Brian Bartosz contact card"
+                aria-label={`Download ${contact.firstName} ${contact.lastName} contact card`}
               >
                 <span>
                   Save Contact
@@ -125,7 +280,89 @@ export default function Home() {
                   <path d="m18 13-6 6-6-6" />
                 </svg>
               </button>
+
+              {statusMessage ? (
+                <p className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/70">
+                  {statusMessage}
+                </p>
+              ) : null}
             </section>
+
+            {showSharePrompt ? (
+              <section className="rounded-[28px] border border-white/10 bg-black/20 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                <div className="space-y-2">
+                  <p className="text-xs uppercase tracking-[0.32em] text-white/55">
+                    Text This Contact
+                  </p>
+                  <h2 className="text-xl font-semibold text-white">
+                    Compose the SMS share
+                  </h2>
+                  <p className="text-sm leading-6 text-white/70">
+                    Samsung Messages and iPhone use slightly different SMS link
+                    formats, so this form builds the right version before it
+                    opens your messaging app.
+                  </p>
+                </div>
+
+                <form className="mt-5 space-y-4" onSubmit={handleShareByText}>
+                  <label className="block space-y-2">
+                    <span className="text-[11px] uppercase tracking-[0.24em] text-white/55">
+                      Recipient Mobile Number
+                    </span>
+                    <input
+                      type="tel"
+                      required
+                      value={recipientPhone}
+                      onChange={(event) => setRecipientPhone(event.target.value)}
+                      placeholder="312-555-0100"
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-base text-white outline-none transition placeholder:text-white/30 focus:border-[var(--accent)] focus:bg-white/10"
+                    />
+                  </label>
+
+                  <label className="block space-y-2">
+                    <span className="text-[11px] uppercase tracking-[0.24em] text-white/55">
+                      Contact Email
+                    </span>
+                    <input
+                      type="email"
+                      required
+                      value={shareEmail}
+                      onChange={(event) => setShareEmail(event.target.value)}
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-base text-white outline-none transition placeholder:text-white/30 focus:border-[var(--accent)] focus:bg-white/10"
+                    />
+                  </label>
+
+                  <label className="block space-y-2">
+                    <span className="text-[11px] uppercase tracking-[0.24em] text-white/55">
+                      Contact Phone Number
+                    </span>
+                    <input
+                      type="tel"
+                      required
+                      value={sharePhone}
+                      onChange={(event) => setSharePhone(event.target.value)}
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-base text-white outline-none transition placeholder:text-white/30 focus:border-[var(--accent)] focus:bg-white/10"
+                    />
+                  </label>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="submit"
+                      className="flex-1 rounded-2xl border border-[var(--accent)] bg-[var(--accent)] px-4 py-3 text-base font-semibold text-black transition hover:-translate-y-0.5"
+                    >
+                      Open Text Message
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowSharePrompt(false)}
+                      className="rounded-2xl border border-white/10 px-4 py-3 text-base font-semibold text-white/75 transition hover:border-white/30 hover:text-white"
+                    >
+                      Maybe Later
+                    </button>
+                  </div>
+                </form>
+              </section>
+            ) : null}
 
             <footer className="space-y-1 border-t border-white/5 pt-5 text-center text-sm tracking-[0.32em] text-white/65">
               <p>BUILT IN AMERICA, ON EARTH.</p>
